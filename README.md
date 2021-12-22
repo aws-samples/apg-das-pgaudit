@@ -1,11 +1,7 @@
-## My Project
+## apg-das-pgaudit
 
-TODO: Fill this README out!
+* This repo is created to store the Cloudformation templates and sample lambda code.
 
-Be sure to:
-
-* Change the title in this README
-* Edit your repository description on GitHub
 
 ## Security
 
