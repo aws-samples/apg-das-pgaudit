@@ -1,0 +1,118 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Lambda function to send SNS notification for errors found CloudWatch log group
+
+Parameters:
+
+  PrefixName:
+    Type: String
+    Description: Give unique prefix name  
+
+  FilterPattern:
+    Type: String
+    Description: patterns to grep
+    Default: "?\"ROLE\" ?\"DDL\" "
+
+  LogGroup:
+    Type: String
+    Description: log group name
+    Default: ''
+  
+  SNSTopicArn:
+    Type: String
+    Description: sns topic arn to send the notification
+    Default: ''
+
+Resources:
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join ['-', [!Sub '${PrefixName}', 'lambda', 'role']]
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+            - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+      Path: /
+
+  LambdaFunctionPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: !Join ['-', [!Sub '${PrefixName}', 'lambda', 'iam', 'policy']]
+      Roles:
+          - Ref: LambdaRole
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action:
+              - sns:Publish
+            Resource: 'arn:aws:sns:*:*:*'
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Join ['-', [!Sub '${PrefixName}', 'lambda', 'function']]
+      Description: Sends Amazon SNS Notification for errors in Amazon CloudWatch Logs of Amazon for PostgreSQL.
+      Runtime: python3.6
+      Code:
+        ZipFile: |
+          from __future__ import print_function
+          import json
+          import base64, zlib
+          import boto3
+          import os
+
+          def logstream_handler(event, context):
+              bstream_data = event.get("awslogs").get("data")
+              decoded_data = json.loads(zlib.decompress(base64.b64decode(bstream_data),16 + zlib.MAX_WBITS))
+              client = boto3.client('sns')
+              subscriptionFilters = decoded_data.get("subscriptionFilters")
+              subject = ""
+              if subscriptionFilters:
+                  subject = "Log Filter Alert : {0}".format(subscriptionFilters[0])
+              decoded_msg = decoded_data.get("logEvents")
+              msg = "logGroup : {0}\nlogStream : {1}".format(
+                  decoded_data.get("logGroup"),
+                  decoded_data.get("logStream"))
+              msg = "{0}\n\nMessages: \n".format(msg)
+              for m in decoded_msg:
+                  msg = "{0}\n{1}".format(msg,m.get("message"))
+              topicARN=os.environ.get("topicARN")
+              args = {}
+              args["TargetArn"]=topicARN
+              args["Message"]=msg
+              if subject:
+                  args["Subject"]=subject
+              response = client.publish(**args)
+              return {
+                  "statusCode": 200,
+                  "body": json.dumps('Sent Message.')
+              }
+
+      Handler: index.logstream_handler
+      MemorySize: 128
+      Timeout: 10
+      Role: !GetAtt LambdaRole.Arn
+      Environment:
+        Variables:
+          topicARN: !Ref SNSTopicArn
+
+  StreamToLambda:
+    Type: AWS::Logs::SubscriptionFilter
+    DependsOn: LogGroupLambdaInvokePermission
+    Properties:
+      DestinationArn: !GetAtt LambdaFunction.Arn
+      FilterPattern: !Ref FilterPattern
+      LogGroupName: !Ref LogGroup
+
+  LogGroupLambdaInvokePermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt LambdaFunction.Arn
+      Principal: 'logs.amazonaws.com'
